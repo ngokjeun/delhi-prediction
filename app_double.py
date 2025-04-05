@@ -17,7 +17,6 @@ from statsmodels.graphics.gofplots import ProbPlot
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
-import tensorflow as tf
 import rasterio
 from skimage.transform import resize
 import numpy as np
