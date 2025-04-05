@@ -17,6 +17,22 @@ from statsmodels.graphics.gofplots import ProbPlot
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
+import tensorflow as tf
+import rasterio
+from skimage.transform import resize
+import numpy as np
+import pandas as pd
+import os
+import pickle
+import statsmodels.api as sm
+import plotly.graph_objects as go
+import plotly.express as px
+from scipy import stats
+
+
+from sklearn.linear_model import LinearRegression
+import streamlit as st
+
 
 import os
 import pickle
@@ -26,20 +42,16 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# Set page configuration
 st.set_page_config(
-    page_title="Nighttime Lights Economic Analysis", layout="wide")
+    page_title="Nighttime Lights Analysis", layout="wide")
 
-# Add a title
-st.title("Nighttime Lights & Economic Analysis")
+st.title("Nighttime Lights Analysis")
 
-# Function to load data
 
 
 @st.cache_data
 def load_data(region):
     if region == "Delhi":
-        # Annual SDP data for Delhi
         sdp_data = {
             'Year': [2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022],
             'GDP': [343798, 391388, 443960, 494803, 550804, 616085, 677900, 738389, 792911, 763435, 904642, 1043759]
@@ -51,67 +63,52 @@ def load_data(region):
         economic_variable = 'GDP'
 
     elif region == "Singapore":
-        # Load Singapore GDP data from CSV
-        try:
-            # Try to read the CSV file
-            sg_gdp_file = "Singapore_GDP_Singstat.csv"
-            if os.path.exists(sg_gdp_file):
-                gdp_data = pd.read_csv(sg_gdp_file)
+        sg_gdp_file = "Singapore_GDP_Singstat.csv"
+        if os.path.exists(sg_gdp_file):
+            gdp_data = pd.read_csv(sg_gdp_file)
 
-                # Process the data (assuming structure from the prompt)
-                # Extracting the GDP row
-                gdp_row = gdp_data[gdp_data['Data Series']
-                                   == 'GDP At Current Market Prices']
 
-                if gdp_row.empty:
-                    st.error("GDP data not found in the CSV file")
-                    return None, None
 
-                # Reshape the data from wide to long format
-                years = []
-                gdp_values = []
 
-                for col in gdp_row.columns:
-                    if col != 'Data Series':
-                        try:
-                            year = int(col.strip())
-                            value = gdp_row[col].values[0]
-                            # Handle special characters in the value
-                            if isinstance(value, str):
-                                value = value.replace(
-                                    '*', '').replace('**', '')
-                                try:
-                                    value = float(value)
-                                except:
-                                    continue
-                            years.append(year)
-                            gdp_values.append(value)
-                        except:
-                            continue
 
-                # Create a new DataFrame with the cleaned data
-                gdp_cleaned = pd.DataFrame({
-                    'Year': years,
-                    'GDP': gdp_values
-                })
+            gdp_row = gdp_data[gdp_data['Data Series']
+                                == 'GDP At Current Market Prices']
 
-                # Filter to only include years from 2012 to 2024 (matching nightlight data)
-                gdp_cleaned = gdp_cleaned[(gdp_cleaned['Year'] >= 2012) & (
-                    gdp_cleaned['Year'] <= 2024)]
+            if gdp_row.empty:
+                st.error("GDP data not found in the CSV file")
+                return None, None
+            years = []
+            gdp_values = []
 
-                # Convert to datetime and set as index
-                gdp_cleaned['date'] = pd.to_datetime(
-                    gdp_cleaned['Year'].astype(str) + '-01-01')
-                econ_df = gdp_cleaned.set_index('date')
-                economic_variable = 'GDP'
-        except Exception as e:
-            st.error(f"Error loading Singapore GDP data: {e}")
-            return None, None
-    else:
-        st.error(f"Unknown region: {region}")
-        return None, None
+            for col in gdp_row.columns:
+                if col != 'Data Series':
+                    try:
+                        year = int(col.strip())
+                        value = gdp_row[col].values[0]
+                        if isinstance(value, str):
+                            value = value.replace(
+                                '*', '').replace('**', '')
+                            try:
+                                value = float(value)
+                            except:
+                                continue
+                        years.append(year)
+                        gdp_values.append(value)
+                    except:
+                        continue
+            gdp_cleaned = pd.DataFrame({
+                'Year': years,
+                'GDP': gdp_values
+            })
 
-    # Monthly interpolation
+            gdp_cleaned = gdp_cleaned[(gdp_cleaned['Year'] >= 2012) & (
+                gdp_cleaned['Year'] <= 2024)]
+
+            gdp_cleaned['date'] = pd.to_datetime(
+                gdp_cleaned['Year'].astype(str) + '-01-01')
+            econ_df = gdp_cleaned.set_index('date')
+            economic_variable = 'GDP'
+
     monthly_dates = pd.date_range(
         start=econ_df.index.min(), end='2024-01-01', freq='MS')
     monthly_econ = econ_df.reindex(monthly_dates).interpolate(method='linear')
@@ -119,14 +116,12 @@ def load_data(region):
     monthly_econ['year'] = monthly_econ['date'].dt.year
     monthly_econ['month'] = monthly_econ['date'].dt.month
 
-    # Convert years to integers to remove decimal places
+
     monthly_econ['year'] = monthly_econ['year'].astype(int)
 
     return econ_df, monthly_econ, economic_variable
 
-# Function to extract features from TIF images
-
-
+# raster
 def extract_features_from_tif(image_path):
     try:
         with rasterio.open(image_path) as src:
@@ -135,30 +130,25 @@ def extract_features_from_tif(image_path):
     except Exception as e:
         st.error(f"Error reading image {image_path}: {e}")
         return None, None, None
-
-    # Handle masked values and NaNs
+    
+    # mask bug fixes dont remove
     if np.ma.is_masked(img):
         img = img.filled(fill_value=0)
     img = np.nan_to_num(img, nan=0)
 
-    # Basic statistics
     light_mean = np.nanmean(img)
     light_std = np.nanstd(img)
     light_max = np.nanmax(img)
-
-    # Urban area ratio
     threshold = 30
     urban_area_ratio = (img > threshold).sum() / img.size
     brightness_urban = light_mean * urban_area_ratio
 
-    # Entropy calculation
+
     hist, _ = np.histogram(img.astype(np.uint8), bins=256, range=(0, 256))
     if hist.sum() > 0:
         hist = hist / hist.sum()
     non_zero = hist[hist > 0]
     entropy = -np.sum(non_zero * np.log2(non_zero)) if non_zero.size > 0 else 0
-
-    # Texture features
     try:
         img_uint8 = img.astype(np.uint8)
         if img_uint8.max() == 0:
@@ -168,7 +158,7 @@ def extract_features_from_tif(image_path):
         contrast = graycoprops(glcm, 'contrast')[0, 0]
         energy = graycoprops(glcm, 'energy')[0, 0]
     except Exception as e:
-        st.warning(f"Error calculating texture features: {e}")
+        st.write("error", e)
         contrast = 0
         energy = 0
 
@@ -196,7 +186,6 @@ def process_images(image_dir, region="Delhi"):
     file_count = 0
     for fname in os.listdir(image_dir):
         if fname.endswith('.tif'):
-            # Different filename parsing for different regions
             if region == "Delhi":
                 parts = fname.split('_')
                 if len(parts) >= 5:
@@ -206,8 +195,6 @@ def process_images(image_dir, region="Delhi"):
                     except ValueError:
                         continue
             elif region == "Singapore":
-                # Adapt the filename parsing for Singapore data
-                # Assuming format similar to Delhi but might need adjustment
                 parts = fname.split('_')
                 if len(parts) >= 5:
                     try:
@@ -215,8 +202,6 @@ def process_images(image_dir, region="Delhi"):
                         month = int(parts[4].split('.')[0])
                     except ValueError:
                         try:
-                            # Alternative parsing if needed
-                            # This is just an example - adjust based on actual filenames
                             date_part = parts[-2] + parts[-1].split('.')[0]
                             year = int(date_part[:4])
                             month = int(date_part[4:6])
@@ -227,31 +212,26 @@ def process_images(image_dir, region="Delhi"):
             image_files.append(
                 {"path": image_path, "year": year, "month": month, "filename": fname})
 
-            feats, img, profile = extract_features_from_tif(image_path)
-            if feats:
-                feats['year'] = year
-                feats['month'] = month
-                feats['date'] = pd.Timestamp(year=year, month=month, day=1)
-                feats['image_path'] = image_path
-                features_list.append(feats)
+            f, _ , _ = extract_features_from_tif(image_path)
+            if f:
+                f['year'] = year
+                f['month'] = month
+                f['date'] = pd.Timestamp(year=year, month=month, day=1)
+                f['image_path'] = image_path
+                features_list.append(f)
                 file_count += 1
 
-    st.info(f"Processed {file_count} image files from {image_dir}")
+    st.write(f"using {file_count} images at {image_dir}")
     return pd.DataFrame(features_list), image_files
 
 
-# Region selection
+
 region = st.sidebar.radio("Select Region", ["Delhi", "Singapore"])
+econ_df, monthly_econ, economic_variable = load_data(region) #GDP
+st.sidebar.title("Dashboard")
+page = st.sidebar.radio("Choose", [
+                        "Data Explorer", "Image Viewer", "Extracted features", "Model Testing"])
 
-# Load economic data
-econ_df, monthly_econ, economic_variable = load_data(region)
-
-# Sidebar navigation
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Select a page", [
-                        "Data Explorer", "Image Viewer", "Feature Analysis", "Model Testing"])
-
-# Set directory path
 if region == "Delhi":
     default_image_dir = "./Delhi_Nighttime_Lights"
 else:
@@ -260,9 +240,8 @@ else:
 image_dir = st.sidebar.text_input(
     "TIF Images Directory", default_image_dir)
 
-# Data source options
 data_source = st.sidebar.radio(
-    "Data Source", ["Process Images Directly", "Load from Pickle File"], index=1)
+    "Data Source", ["Process Images", "Pickle"], index=1)
 
 if data_source == "Load from Pickle File":
     pickle_path = st.sidebar.text_input(
@@ -292,8 +271,6 @@ if data_source == "Load from Pickle File":
         features_df, image_files = process_images(image_dir, region)
 else:
     features_df, image_files = process_images(image_dir, region)
-
-    # Save to pickle for future use
     save_pickle = st.sidebar.checkbox(
         "Save features to pickle file", value=True)
     if save_pickle and not features_df.empty:
@@ -302,7 +279,7 @@ else:
             pickle.dump(features_df, f)
         st.sidebar.success(f"Saved features to {pickle_name}")
 
-# Check for data
+
 if features_df.empty:
     st.error(
         f"No data available for {region}. Please check the image directory.")
@@ -311,13 +288,9 @@ if features_df.empty:
 if econ_df is None or monthly_econ is None:
     st.error(f"No economic data available for {region}.")
     st.stop()
-
-# Merge image features with monthly economic data
 merged_df = pd.merge(features_df, monthly_econ, on=[
                      'year', 'month'], how='inner')
 merged_df['month_int'] = merged_df['month']
-
-# Define available models
 models = {
     "Random Forest": RandomForestRegressor(n_estimators=500, random_state=42),
     "Linear Regression": LinearRegression()
@@ -327,8 +300,6 @@ month_dummies = pd.get_dummies(
     merged_df['month'], prefix='month', drop_first=True)
 merged_df = pd.concat([merged_df, month_dummies], axis=1)
 month_cols = [col for col in merged_df.columns if col.startswith('month_')]
-
-# Remove light_sum from feature columns (it's redundant with mean)
 feature_columns = [
     'light_mean', 'light_std', 'light_max',
     'urban_area_ratio', 'brightness_urban', 'light_entropy',
@@ -364,16 +335,11 @@ feature_columns.extend([f for f in yoy_feats if f in df_temp.columns])
 merged_df = df_temp.copy()
 merged_df = merged_df.fillna(method="ffill")
 
-# Page: Data Explorer
 if page == "Data Explorer":
     st.header("Data Explorer")
-
-    # Economic Data
     st.subheader(f"{region} {economic_variable} Data")
     econ_df_display = econ_df.reset_index()
     st.dataframe(econ_df_display)
-
-    # Add "lazy student" analytics on GDP data
     st.subheader("GDP Data Analysis")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -386,17 +352,13 @@ if page == "Data Explorer":
     with col4:
         st.metric("Avg GDP", f"{econ_df['GDP'].mean():.0f}")
     
-    # Economic trend plot
     st.subheader(f"Interactive {economic_variable} Trend")
     fig = px.line(econ_df.reset_index(), x='date', y=economic_variable,
                   title=f"{region} {economic_variable} Trend", markers=True)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Monthly data
     st.subheader("Monthly Data (Interpolated)")
     st.dataframe(monthly_econ[['date', 'GDP', 'year', 'month']])
-
-    # Box plot for brightness over years
     st.subheader("Light Brightness Distribution by Year")
     if not features_df.empty and 'light_mean' in features_df.columns and 'year' in features_df.columns:
         try:
@@ -406,35 +368,24 @@ if page == "Data Explorer":
                               yaxis_title="Mean Light Brightness")
             st.plotly_chart(fig, use_container_width=True)
 
-            # Add a text box explaining what the boxplot shows
-            st.info("This boxplot shows how the distribution of nighttime light brightness has changed over the years. The box represents the middle 50% of values, the line in the box is the median, and the whiskers show the range of non-outlier values.")
         except Exception as e:
             st.error(f"Error creating boxplot: {e}")
 
-    # Features data
     st.subheader("Features Data")
     st.dataframe(features_df)
-
-    # Merged data
     st.subheader("Merged Data")
     st.dataframe(merged_df)
 
-# Page: Image Viewer
 elif page == "Image Viewer":
     st.header(f"{region} Nighttime Light Image Viewer")
 
     if 'image_path' not in merged_df.columns:
         st.error("Image paths not available.")
         st.stop()
-
-    # Check for valid paths
     has_valid_paths = any(os.path.exists(path)
                           for path in merged_df['image_path'].unique())
 
     if not has_valid_paths:
-        st.warning("Image paths don't exist on this system.")
-
-        # Path updater
         st.subheader("Update Image Paths")
         new_image_dir = st.text_input("Image Directory", image_dir)
 
@@ -469,10 +420,7 @@ elif page == "Image Viewer":
 
         st.error("No valid image paths found.")
     else:
-        # Time slider implementation
         st.subheader("Explore Images Over Time")
-
-        # Get valid dates and paths
         valid_dates = []
         date_to_path = {}
 
@@ -488,19 +436,15 @@ elif page == "Image Viewer":
         if not valid_dates:
             st.error("No valid image files found.")
             st.stop()
-
-        # Slider
         selected_index = st.slider(
             "Select Date", min_value=0, max_value=len(valid_dates)-1, value=0)
         selected_date = valid_dates[selected_index]
         st.info(f"Viewing: {selected_date.strftime('%B %Y')}")
 
-        # Auto-play option
         auto_play = st.checkbox("Auto-play")
         if auto_play:
             play_speed = st.slider("Speed (seconds)", 0.2, 5.0, 0.3, 0.5)
 
-        # Get image and display
         selected_image = date_to_path[selected_date]
         selected_year = selected_date.year
         selected_month = selected_date.month
@@ -517,8 +461,6 @@ elif page == "Image Viewer":
                     if os.path.exists(current_image):
                         feats, img, _ = extract_features_from_tif(
                             current_image)
-
-                        # Display
                         col1, col2 = st.columns([3, 1])
 
                         with col1:
@@ -530,14 +472,11 @@ elif page == "Image Viewer":
                             st.pyplot(fig)
 
                         with col2:
-                            # Features
                             st.subheader("Features")
                             for key, value in feats.items():
                                 if key not in ['year', 'month', 'date', 'image_path']:
                                     st.metric(key, f"{value:.2f}" if isinstance(
                                         value, float) else value)
-
-                            # Economic value
                             econ_value = merged_df[
                                 (merged_df['year'] == current_date.year) &
                                 (merged_df['month'] == current_date.month)
@@ -551,25 +490,22 @@ elif page == "Image Viewer":
         else:
             if os.path.exists(selected_image):
                 feats, img, _ = extract_features_from_tif(selected_image)
-
-                # Display layout
                 col1, col2 = st.columns([3, 1])
 
                 with col1:
-                    # Main image
+
                     fig, ax = plt.subplots(figsize=(10, 8))
                     show(img, ax=ax, cmap='viridis',
                          title=f"{region} - {selected_date.strftime('%B %Y')}")
                     plt.colorbar(ax.images[0], ax=ax, label="Light Intensity")
                     st.pyplot(fig)
 
-                    # Feature trend
+
                     st.subheader("Feature Trend")
                     feature_options = [col for col in merged_df.columns]
                     selected_feature = st.selectbox(
                         "Select Feature", feature_options)
                     merged_df['date'] = merged_df['date_y']
-                    # Plot trend
                     time_data = merged_df.sort_values('date')
                     fig = px.line(time_data, x='date', y=selected_feature,
                                   title=f"{selected_feature} Over Time")
@@ -578,14 +514,13 @@ elif page == "Image Viewer":
                     st.plotly_chart(fig, use_container_width=True)
 
                 with col2:
-                    # Features
                     st.subheader("Image Features")
                     for key, value in feats.items():
                         if key not in ['year', 'month', 'date', 'image_path']:
                             st.metric(key, f"{value:.2f}" if isinstance(
                                 value, float) else value)
 
-                    # Economic value
+
                     econ_value = merged_df[
                         (merged_df['year'] == selected_year) &
                         (merged_df['month'] == selected_month)
@@ -595,7 +530,6 @@ elif page == "Image Viewer":
                     st.metric(f"{economic_variable} Value",
                               f"{econ_value:.2f}")
 
-                    # Month-over-month comparison
                     if selected_index > 0:
                         previous_date = valid_dates[selected_index - 1]
                         previous_econ = merged_df[
@@ -607,13 +541,6 @@ elif page == "Image Viewer":
                             (econ_value - previous_econ) / previous_econ) * 100
                         st.metric("Monthly Change", f"{econ_change:.2f}%")
 
-                    # Histogram
-                    st.subheader("Pixel Distribution")
-                    fig, ax = plt.subplots(figsize=(5, 3))
-                    ax.hist(img.flatten(), bins=30, alpha=0.7, color='teal')
-                    st.pyplot(fig)
-
-                # Compare with previous/next
                 st.subheader("Previous/Next Comparison")
                 n_months = st.radio("Choose date comparison:", ["MoM", "YoY"])
                 n_months = 1 if n_months == "MoM" else 12
@@ -647,7 +574,6 @@ elif page == "Image Viewer":
                             st.pyplot(fig)
 
                 with col2:
-                    # Difference map
                     if selected_index > 0:
                         previous_date = valid_dates[selected_index - n_months]
                         previous_image = date_to_path[previous_date]
@@ -655,15 +581,11 @@ elif page == "Image Viewer":
                         if os.path.exists(previous_image):
                             _, prev_img, _ = extract_features_from_tif(
                                 previous_image)
-
-                            # Calculate difference
                             diff_img = img.astype(
                                 float) - prev_img.astype(float)
                             vmax = max(abs(diff_img.min()),
                                        abs(diff_img.max()))
                             vmin = -vmax
-
-                            # Show difference
                             fig, ax = plt.subplots(figsize=(8, 6))
                             im = ax.imshow(
                                 diff_img, cmap='RdBu_r', vmin=vmin, vmax=vmax)
@@ -672,20 +594,16 @@ elif page == "Image Viewer":
                             plt.colorbar(im, ax=ax, label="Light Change")
                             st.pyplot(fig)
 
-# Page: Feature Analysis
 elif page == "Feature Analysis":
     st.header("Feature Analysis")
 
     log_transform = True
 
-    # Feature selection
-    selected_feature = st.selectbox("Select Feature", [feature for feature in feature_columns if feature not in month_cols])
 
-    # Ensure date column is available
+    selected_feature = st.selectbox("Select Feature", [feature for feature in feature_columns if feature not in month_cols])
     if 'date_y' in merged_df.columns:
         merged_df['date'] = merged_df['date_y']
 
-    # Prepare data with optional log transformation
     df_plot = merged_df.copy()
     if log_transform:
         df_plot[economic_variable] = np.log(df_plot[economic_variable])
@@ -693,14 +611,11 @@ elif page == "Feature Analysis":
     else:
         y_label = economic_variable
 
-    # Time series with error bands
     st.subheader(f"{selected_feature} Over Time")
     time_data = df_plot.sort_values('date')
 
-    # Create Plotly figure
     fig = go.Figure()
 
-    # Add main line
     fig.add_trace(go.Scatter(
         x=time_data['date'],
         y=time_data[selected_feature],
@@ -708,15 +623,12 @@ elif page == "Feature Analysis":
         name=selected_feature
     ))
 
-    # Calculate rolling mean and standard deviation
-    # Adjust window size based on data length
     window_size = max(3, len(time_data) // 4)
     rolling_mean = time_data[selected_feature].rolling(
         window=window_size, center=True).mean()
     rolling_std = time_data[selected_feature].rolling(
         window=window_size, center=True).std()
 
-    # Add confidence bands (mean +/- 1 std)
     fig.add_trace(go.Scatter(
         x=time_data['date'],
         y=rolling_mean + rolling_std,
@@ -744,18 +656,14 @@ elif page == "Feature Analysis":
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # Correlation with economic variable
     correlation = df_plot[[selected_feature,
                            economic_variable]].corr().iloc[0, 1]
     st.metric(f"Correlation with {y_label}", f"{correlation:.4f}")
 
-    # Calculate p-value for correlation
     corr_pvalue = stats.pearsonr(
         df_plot[selected_feature].values, df_plot[economic_variable].values)[1]
     st.metric("P-value", f"{corr_pvalue:.4f}",
               delta="Statistically significant" if corr_pvalue < 0.05 else "Not statistically significant")
-
-    # Advanced scatter plot with regression line and confidence intervals
     st.subheader(f"Regression Analysis")
 
     @st.cache_data
@@ -770,28 +678,18 @@ elif page == "Feature Analysis":
         model_multi = sm.OLS(y_multi, X_multi).fit()
         return model_multi, X_multi, y_multi
 
-
-    # Fit the multiple regression model
     model_multi, X_multi, y_multi = fit_multiple_regression(
         merged_df, [
             col for col in feature_columns if col not in month_cols], economic_variable)
-
-    # Display regression model summary
     st.subheader("Multiple Regression Model Summary")
     st.code(model_multi.summary().as_text())
-
-    # Multicollinearity analysis with VIF
     st.subheader("Multicollinearity Analysis")
-
-    # Calculate VIF
     vif_data = pd.DataFrame()
     vif_data["Feature"] = X_multi.columns
     vif_data["VIF"] = [variance_inflation_factor(X_multi.values, i)
                     for i in range(X_multi.shape[1])]
 
     vif_data.sort_values(by='VIF', ascending=False, inplace=True)
-
-    # VIF visualization
     fig_vif = go.Figure(go.Bar(
         x=vif_data['Feature'],
         y=vif_data['VIF'],
@@ -812,8 +710,6 @@ elif page == "Feature Analysis":
         ]
     )
     st.plotly_chart(fig_vif, use_container_width=True)
-
-    # Correlation matrix with significance levels
     st.subheader("Correlation Matrix with Significance Levels")
 
     corr_cols = [
@@ -821,19 +717,14 @@ elif page == "Feature Analysis":
     corr_matrix = merged_df[corr_cols].corr()
     p_matrix = pd.DataFrame(np.ones_like(corr_matrix),
                             columns=corr_matrix.columns, index=corr_matrix.index)
-
-    # Compute p-values
     for col1 in corr_matrix.columns:
         for col2 in corr_matrix.columns:
             if col1 != col2:
                 p_matrix.loc[col1, col2] = stats.pearsonr(
                     merged_df[col1].dropna(), merged_df[col2].dropna())[1]
-
-    # Plot heatmap
     fig_corr = px.imshow(corr_matrix, text_auto='.2f', aspect='auto',
                         color_continuous_scale='RdBu_r', color_continuous_midpoint=0)
 
-    # Add significance annotations
     for i, col1 in enumerate(corr_matrix.columns):
         for j, col2 in enumerate(corr_matrix.columns):
             p_val = p_matrix.loc[col1, col2]
@@ -858,31 +749,22 @@ elif page == "Feature Analysis":
     st.plotly_chart(fig_corr, use_container_width=True)
 
 
-# Page: Model Testing
 elif page == "Model Testing":
     st.header("Model Testing")
-
-    # Model selection
     model_options = {
-        "Random Forest": lambda: RandomForestRegressor(n_estimators=500, random_state=42),
+        "Random Forest": lambda: RandomForestRegressor(n_estimators=5000, random_state=42, max_depth=10, min_samples_split=2),
         "Linear Regression": lambda: LinearRegression()
     }
     selected_model_name = st.selectbox(
         "Select Model", list(model_options.keys()))
 
-    # Ensure the 'date' column is in datetime format and sort the DataFrame
     if 'date_y' in merged_df.columns:
         merged_df['date'] = pd.to_datetime(merged_df['date_y'])
     merged_df = merged_df.sort_values('date')
-
-    # Create a 'year' column if not already present
     if 'year' not in merged_df.columns:
         merged_df['year'] = merged_df['date'].dt.year
-
-    # Create a numeric month column if not already present
     merged_df['month_int'] = merged_df['month']
 
-    # Define feature columns (including month_int as a seasonal feature)
     feature_columns = [
         'light_mean', 'light_std', 'light_max',
         'urban_area_ratio', 'brightness_urban', 'light_entropy',
@@ -890,17 +772,11 @@ elif page == "Model Testing":
     ] + month_cols
 
     results = []
-
-    # Select test dates: use all available dates for the region
     min_year = merged_df['year'].min()
     max_year = merged_df['year'].max()
     test_dates = merged_df[(merged_df['year'] >= min_year) & (
         merged_df['year'] <= max_year)]['date'].unique()
     test_dates = np.sort(test_dates)
-
-    st.info(
-        f"Running walk‐forward CV using {selected_model_name} over {len(test_dates)} test dates for {region}.")
-
     log_transform = True
 
     with st.spinner("Running CV..."):
@@ -1009,7 +885,6 @@ elif page == "Model Testing":
             with col4:
                 st.metric("R²", f"{r2:.3f}")
 
-        # Feature Importances
         st.subheader("Feature Importances")
         if selected_model_name == "Random Forest":
             feature_importances = model.feature_importances_
@@ -1032,3 +907,4 @@ elif page == "Model Testing":
             fig = px.bar(importance_df, x='Feature', y='Coefficient',
                  title="Feature Coefficients (Linear Regression)", labels={'Coefficient': 'Coefficient Value'})
             st.plotly_chart(fig, use_container_width=True)
+
