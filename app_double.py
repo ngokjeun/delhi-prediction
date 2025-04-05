@@ -736,7 +736,7 @@ elif page == "Extracted features":
 elif page == "Model Testing":
     st.header("Model Testing")
     model_options = {
-        "Random Forest": lambda: RandomForestRegressor(n_estimators=5000, random_state=42, max_depth=10, min_samples_split=2),
+        "Random Forest": lambda: RandomForestRegressor(n_estimators=500, random_state=42, max_depth=10, min_samples_split=2),
         "Linear Regression": lambda: LinearRegression()
     }
     selected_model_name = st.selectbox(
@@ -765,12 +765,13 @@ elif page == "Model Testing":
 
     with st.spinner("Running CV..."):
         for test_date in test_dates:
+            # st.write(test_date)
             train_data = merged_df[merged_df['date'] < test_date]
             test_data = merged_df[merged_df['date'] == test_date]
 
             if train_data.empty or test_data.empty:
                 continue
-
+            # st.write(train_data.shape, test_data.shape)
             X_train = train_data[feature_columns].values
             X_test = test_data[feature_columns].values
 
