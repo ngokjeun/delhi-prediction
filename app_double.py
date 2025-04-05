@@ -10,6 +10,13 @@ from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.metrics import mean_absolute_percentage_error, r2_score
+from scipy import stats
+import statsmodels.api as sm
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from statsmodels.graphics.gofplots import ProbPlot
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+import plotly.graph_objects as go
 
 import os
 import pickle
@@ -135,7 +142,6 @@ def extract_features_from_tif(image_path):
     img = np.nan_to_num(img, nan=0)
 
     # Basic statistics
-    light_sum = np.nansum(img)
     light_mean = np.nanmean(img)
     light_std = np.nanstd(img)
     light_max = np.nanmax(img)
@@ -167,7 +173,6 @@ def extract_features_from_tif(image_path):
         energy = 0
 
     return {
-        'light_sum': light_sum,
         'light_mean': light_mean,
         'light_std': light_std,
         'light_max': light_max,
@@ -314,17 +319,50 @@ merged_df['month_int'] = merged_df['month']
 
 # Define available models
 models = {
-    "Random Forest": RandomForestRegressor(n_estimators=100, random_state=42),
-    "Linear Regression": LinearRegression(),
-    "Support Vector Regression": SVR(kernel='linear')
+    "Random Forest": RandomForestRegressor(n_estimators=500, random_state=42),
+    "Linear Regression": LinearRegression()
 }
 
-# Define feature columns
+month_dummies = pd.get_dummies(
+    merged_df['month'], prefix='month', drop_first=True)
+merged_df = pd.concat([merged_df, month_dummies], axis=1)
+month_cols = [col for col in merged_df.columns if col.startswith('month_')]
+
+# Remove light_sum from feature columns (it's redundant with mean)
 feature_columns = [
-    'light_sum', 'light_mean', 'light_std', 'light_max',
+    'light_mean', 'light_std', 'light_max',
     'urban_area_ratio', 'brightness_urban', 'light_entropy',
-    'light_contrast', 'light_energy', 'month_int'
-]
+    'light_contrast', 'light_energy'
+] + month_cols
+
+
+df_temp = merged_df.copy()
+df_temp['year_prev'] = df_temp['year'] - 1
+df_temp['key'] = df_temp['year'].astype(
+    str) + '-' + df_temp['month'].astype(str)
+df_temp['key_prev'] = df_temp['year_prev'].astype(
+    str) + '-' + df_temp['month'].astype(str)
+
+prev_vals = {}
+for _, row in df_temp.iterrows():
+    k = row['key']
+    for feat in ['light_mean', 'light_std', 'light_max', 'urban_area_ratio', 'brightness_urban']:
+        prev_vals[f"{k}_{feat}"] = row[feat]
+
+for idx, row in df_temp.iterrows():
+    k_prev = row['key_prev']
+    for feat in ['light_mean', 'light_std', 'light_max', 'urban_area_ratio', 'brightness_urban']:
+        prev_key = f"{k_prev}_{feat}"
+        if prev_key in prev_vals:
+            yoy_val = ((row[feat] - prev_vals[prev_key]) / prev_vals[prev_key] * 100
+                       if prev_vals[prev_key] != 0 else np.nan)
+            df_temp.loc[idx, f"{feat}_yoy"] = yoy_val
+
+yoy_feats = [f"{feat}_yoy" for feat in [
+    'light_mean', 'light_std', 'urban_area_ratio']]
+feature_columns.extend([f for f in yoy_feats if f in df_temp.columns])
+merged_df = df_temp.copy()
+merged_df = merged_df.fillna(method="ffill")
 
 # Page: Data Explorer
 if page == "Data Explorer":
@@ -336,7 +374,7 @@ if page == "Data Explorer":
     st.dataframe(econ_df_display)
 
     # Add "lazy student" analytics on GDP data
-    st.subheader("GDP Data Analysis - Quick Stats")
+    st.subheader("GDP Data Analysis")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Annual Growth Rate",
@@ -356,16 +394,7 @@ if page == "Data Explorer":
 
     # Monthly data
     st.subheader("Monthly Data (Interpolated)")
-    st.dataframe(monthly_econ)
-
-    # Download button for monthly data
-    csv = monthly_econ.to_csv(index=False)
-    st.download_button(
-        label="Download Monthly Data as CSV",
-        data=csv,
-        file_name=f"{region.lower()}_monthly_data.csv",
-        mime="text/csv"
-    )
+    st.dataframe(monthly_econ[['date', 'GDP', 'year', 'month']])
 
     # Box plot for brightness over years
     st.subheader("Light Brightness Distribution by Year")
@@ -536,9 +565,7 @@ elif page == "Image Viewer":
 
                     # Feature trend
                     st.subheader("Feature Trend")
-                    feature_options = [col for col in merged_df.columns if col in [
-                        'light_mean', 'urban_area_ratio', 'brightness_urban', economic_variable
-                    ]]
+                    feature_options = [col for col in merged_df.columns]
                     selected_feature = st.selectbox(
                         "Select Feature", feature_options)
                     merged_df['date'] = merged_df['date_y']
@@ -588,11 +615,12 @@ elif page == "Image Viewer":
 
                 # Compare with previous/next
                 st.subheader("Previous/Next Comparison")
+                n_months = st.radio("Choose date comparison:", ["MoM", "YoY"])
+                n_months = 1 if n_months == "MoM" else 12
                 col1, col2, col3 = st.columns([1, 2, 1])
-
                 with col1:
                     if selected_index > 0:
-                        previous_date = valid_dates[selected_index - 1]
+                        previous_date = valid_dates[selected_index - n_months]
                         previous_image = date_to_path[previous_date]
 
                         if os.path.exists(previous_image):
@@ -606,7 +634,7 @@ elif page == "Image Viewer":
 
                 with col3:
                     if selected_index < len(valid_dates) - 1:
-                        next_date = valid_dates[selected_index + 1]
+                        next_date = valid_dates[selected_index + n_months]
                         next_image = date_to_path[next_date]
 
                         if os.path.exists(next_image):
@@ -621,7 +649,7 @@ elif page == "Image Viewer":
                 with col2:
                     # Difference map
                     if selected_index > 0:
-                        previous_date = valid_dates[selected_index - 1]
+                        previous_date = valid_dates[selected_index - n_months]
                         previous_image = date_to_path[previous_date]
 
                         if os.path.exists(previous_image):
@@ -648,34 +676,187 @@ elif page == "Image Viewer":
 elif page == "Feature Analysis":
     st.header("Feature Analysis")
 
+    log_transform = True
+
     # Feature selection
-    selected_feature = st.selectbox("Select Feature", feature_columns)
+    selected_feature = st.selectbox("Select Feature", [feature for feature in feature_columns if feature not in month_cols])
 
     # Ensure date column is available
     if 'date_y' in merged_df.columns:
         merged_df['date'] = merged_df['date_y']
 
-    # Time series
-    fig = px.line(merged_df.sort_values('date'), x='date',
-                  y=selected_feature, title=f"{selected_feature} Over Time")
+    # Prepare data with optional log transformation
+    df_plot = merged_df.copy()
+    if log_transform:
+        df_plot[economic_variable] = np.log(df_plot[economic_variable])
+        y_label = f"Log({economic_variable})"
+    else:
+        y_label = economic_variable
+
+    # Time series with error bands
+    st.subheader(f"{selected_feature} Over Time")
+    time_data = df_plot.sort_values('date')
+
+    # Create Plotly figure
+    fig = go.Figure()
+
+    # Add main line
+    fig.add_trace(go.Scatter(
+        x=time_data['date'],
+        y=time_data[selected_feature],
+        mode='lines+markers',
+        name=selected_feature
+    ))
+
+    # Calculate rolling mean and standard deviation
+    # Adjust window size based on data length
+    window_size = max(3, len(time_data) // 4)
+    rolling_mean = time_data[selected_feature].rolling(
+        window=window_size, center=True).mean()
+    rolling_std = time_data[selected_feature].rolling(
+        window=window_size, center=True).std()
+
+    # Add confidence bands (mean +/- 1 std)
+    fig.add_trace(go.Scatter(
+        x=time_data['date'],
+        y=rolling_mean + rolling_std,
+        mode='lines',
+        line=dict(width=0),
+        showlegend=False
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=time_data['date'],
+        y=rolling_mean - rolling_std,
+        mode='lines',
+        line=dict(width=0),
+        fillcolor='rgba(68, 68, 168, 0.3)',
+        fill='tonexty',
+        name='± 1 Std Dev'
+    ))
+
+    fig.update_layout(
+        title=f"{selected_feature} Over Time with Confidence Bands",
+        xaxis_title="Date",
+        yaxis_title=selected_feature,
+        hovermode="x unified"
+    )
+
     st.plotly_chart(fig, use_container_width=True)
 
     # Correlation with economic variable
-    correlation = merged_df[[selected_feature,
-                             economic_variable]].corr().iloc[0, 1]
-    st.metric(f"Correlation with {economic_variable}", f"{correlation:.4f}")
+    correlation = df_plot[[selected_feature,
+                           economic_variable]].corr().iloc[0, 1]
+    st.metric(f"Correlation with {y_label}", f"{correlation:.4f}")
 
-    # Scatter plot
-    fig = px.scatter(merged_df, x=selected_feature, y=economic_variable, trendline="ols",
-                     title=f"{economic_variable} vs {selected_feature}")
-    st.plotly_chart(fig, use_container_width=True)
+    # Calculate p-value for correlation
+    corr_pvalue = stats.pearsonr(
+        df_plot[selected_feature].values, df_plot[economic_variable].values)[1]
+    st.metric("P-value", f"{corr_pvalue:.4f}",
+              delta="Statistically significant" if corr_pvalue < 0.05 else "Not statistically significant")
 
-    # Correlation matrix
-    st.subheader("Correlation Matrix")
-    correlation_matrix = merged_df[feature_columns +
-                                   [economic_variable]].corr()
-    fig = px.imshow(correlation_matrix, text_auto='.2f', aspect="auto")
-    st.plotly_chart(fig, use_container_width=True)
+    # Advanced scatter plot with regression line and confidence intervals
+    st.subheader(f"Regression Analysis")
+
+    @st.cache_data
+    def fit_multiple_regression(data, features, target):
+        X_multi = data[features].copy()
+        X_multi = sm.add_constant(X_multi)
+        X_multi = X_multi.apply(pd.to_numeric, errors='coerce')
+        X_multi.replace([np.inf, -np.inf], np.nan, inplace=True)
+        X_multi.dropna(inplace=True)
+        y_multi = data.loc[X_multi.index, target]
+
+        model_multi = sm.OLS(y_multi, X_multi).fit()
+        return model_multi, X_multi, y_multi
+
+
+    # Fit the multiple regression model
+    model_multi, X_multi, y_multi = fit_multiple_regression(
+        merged_df, [
+            col for col in feature_columns if col not in month_cols], economic_variable)
+
+    # Display regression model summary
+    st.subheader("Multiple Regression Model Summary")
+    st.code(model_multi.summary().as_text())
+
+    # Multicollinearity analysis with VIF
+    st.subheader("Multicollinearity Analysis")
+
+    # Calculate VIF
+    vif_data = pd.DataFrame()
+    vif_data["Feature"] = X_multi.columns
+    vif_data["VIF"] = [variance_inflation_factor(X_multi.values, i)
+                    for i in range(X_multi.shape[1])]
+
+    vif_data.sort_values(by='VIF', ascending=False, inplace=True)
+
+    # VIF visualization
+    fig_vif = go.Figure(go.Bar(
+        x=vif_data['Feature'],
+        y=vif_data['VIF'],
+        marker_color=[('red' if vif > 10 else 'orange' if vif >
+                    5 else 'green') for vif in vif_data['VIF']]
+    ))
+
+    fig_vif.update_layout(
+        title="Variance Inflation Factor (VIF)",
+        xaxis_title="Features",
+        yaxis_title="VIF (log scale)",
+        yaxis_type="log",
+        shapes=[
+            dict(type='line', y0=5, y1=5, x0=-0.5, x1=len(vif_data['Feature'])-0.5,
+                line=dict(color='orange', dash='dash')),
+            dict(type='line', y0=10, y1=10, x0=-0.5, x1=len(vif_data['Feature'])-0.5,
+                line=dict(color='red', dash='dash'))
+        ]
+    )
+    st.plotly_chart(fig_vif, use_container_width=True)
+
+    # Correlation matrix with significance levels
+    st.subheader("Correlation Matrix with Significance Levels")
+
+    corr_cols = [
+        col for col in feature_columns if col not in month_cols] + [economic_variable]
+    corr_matrix = merged_df[corr_cols].corr()
+    p_matrix = pd.DataFrame(np.ones_like(corr_matrix),
+                            columns=corr_matrix.columns, index=corr_matrix.index)
+
+    # Compute p-values
+    for col1 in corr_matrix.columns:
+        for col2 in corr_matrix.columns:
+            if col1 != col2:
+                p_matrix.loc[col1, col2] = stats.pearsonr(
+                    merged_df[col1].dropna(), merged_df[col2].dropna())[1]
+
+    # Plot heatmap
+    fig_corr = px.imshow(corr_matrix, text_auto='.2f', aspect='auto',
+                        color_continuous_scale='RdBu_r', color_continuous_midpoint=0)
+
+    # Add significance annotations
+    for i, col1 in enumerate(corr_matrix.columns):
+        for j, col2 in enumerate(corr_matrix.columns):
+            p_val = p_matrix.loc[col1, col2]
+            significance = ''
+            if p_val < 0.001:
+                significance = '***'
+            elif p_val < 0.01:
+                significance = '**'
+            elif p_val < 0.05:
+                significance = '*'
+
+            if significance and col1 != col2:
+                fig_corr.add_annotation(
+                    x=j, y=i,
+                    text=significance,
+                    showarrow=False,
+                    font=dict(size=14, color='black'),
+                    xanchor='center', yanchor='bottom'
+                )
+
+    fig_corr.update_layout(title="Correlation Matrix (Significance Annotated)")
+    st.plotly_chart(fig_corr, use_container_width=True)
+
 
 # Page: Model Testing
 elif page == "Model Testing":
@@ -703,10 +884,10 @@ elif page == "Model Testing":
 
     # Define feature columns (including month_int as a seasonal feature)
     feature_columns = [
-        'light_sum', 'light_mean', 'light_std', 'light_max',
+        'light_mean', 'light_std', 'light_max',
         'urban_area_ratio', 'brightness_urban', 'light_entropy',
-        'light_contrast', 'light_energy', 'month_int'
-    ]
+        'light_contrast', 'light_energy'
+    ] + month_cols
 
     results = []
 
@@ -720,38 +901,43 @@ elif page == "Model Testing":
     st.info(
         f"Running walk‐forward CV using {selected_model_name} over {len(test_dates)} test dates for {region}.")
 
-    with st.spinner("Running walk‐forward cross-validation..."):
+    log_transform = True
+
+    with st.spinner("Running CV..."):
         for test_date in test_dates:
-            # Training set: all data strictly before the test date.
             train_data = merged_df[merged_df['date'] < test_date]
-            # Test set: data exactly on the test date.
             test_data = merged_df[merged_df['date'] == test_date]
 
             if train_data.empty or test_data.empty:
-                st.write(
-                    f"Insufficient data for test date {pd.to_datetime(test_date).date()}. Skipping.")
                 continue
 
-            # Prepare features and target (SDP is assumed to be your target variable)
             X_train = train_data[feature_columns].values
-            y_train = train_data['GDP'].values
             X_test = test_data[feature_columns].values
-            y_test = test_data['GDP'].values
 
-            # Standardize features
+            if log_transform:
+                y_train = np.log(train_data['GDP'].values)
+                y_test = np.log(test_data['GDP'].values)
+            else:
+                y_train = train_data['GDP'].values
+                y_test = test_data['GDP'].values
+
             scaler = StandardScaler()
             X_train_scaled = scaler.fit_transform(X_train)
             X_test_scaled = scaler.transform(X_test)
 
-            # Instantiate the selected model.
             model = model_options[selected_model_name]()
             model.fit(X_train_scaled, y_train)
 
-            # Make predictions on the test set for the current month
-            y_pred = model.predict(X_test_scaled)
-            # In case multiple samples exist on the same test date, average the predictions.
+            y_pred_transformed = model.predict(X_test_scaled)
+
+            if log_transform:
+                y_pred = np.exp(y_pred_transformed)
+                actual = np.exp(np.mean(y_test))
+            else:
+                y_pred = y_pred_transformed
+                actual = np.mean(y_test)
+
             predicted = np.mean(y_pred)
-            actual = np.mean(y_test)
             error = (predicted - actual) / actual
 
             results.append({
@@ -759,68 +945,90 @@ elif page == "Model Testing":
                 'actual_gdp': actual,
                 'predicted_gdp': predicted,
                 'error': error,
-                'num_train_samples': len(train_data),
-                'num_test_samples': len(test_data)
+                'samples': len(train_data),
+                'actual_t': np.mean(y_test),
+                'predicted_t': np.mean(y_pred_transformed),
             })
 
-        # Convert results to a DataFrame and display.
         results_df = pd.DataFrame(results)
-        st.subheader("Walk‐Forward Cross Validation Results")
         st.dataframe(results_df)
 
-        # Plot predicted vs. actual GDP values over the test dates using Plotly.
+        t_val = stats.t.ppf(0.975, df=len(results_df)-2)
+
+        if len(results_df) > 2:
+            if log_transform:
+                t_std = np.std(results_df['actual_t'] - results_df['predicted_t'])
+                results_df['ci_l'] = np.exp(
+                    results_df['predicted_t'] - t_val * t_std)
+                results_df['ci_u'] = np.exp(
+                    results_df['predicted_t'] + t_val * t_std)
+            else:
+                pred_std = np.std(
+                    results_df['actual_gdp'] - results_df['predicted_gdp'])
+                results_df['ci_l'] = results_df['predicted_gdp'] - t_val * pred_std
+                results_df['ci_u'] = results_df['predicted_gdp'] + t_val * pred_std
+
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=results_df['test_date'],
-            y=results_df['actual_gdp'],
-            mode='lines+markers',
-            name='Actual GDP'
-        ))
-        fig.add_trace(go.Scatter(
-            x=results_df['test_date'],
-            y=results_df['predicted_gdp'],
-            mode='lines+markers',
-            name='Predicted GDP'
-        ))
-        fig.update_layout(
-            title='GDP Predictions (Walk‐Forward CV for Each Month)',
-            xaxis_title='Test Date',
-            yaxis_title='GDP',
-            legend_title='Legend'
-        )
-        st.plotly_chart(fig)
+            x=results_df['test_date'], y=results_df['actual_gdp'], mode='lines+markers', name='Actual'))
+        fig.add_trace(go.Scatter(x=results_df['test_date'], y=results_df['predicted_gdp'],
+                    mode='lines+markers', name='Predicted', line=dict(color='red')))
 
-        # Calculate additional metrics: MAPE and R².
+        if 'ci_l' in results_df.columns:
+            fig.add_trace(go.Scatter(x=results_df['test_date'], y=results_df['ci_u'], mode='lines', line=dict(
+                width=0), showlegend=False))
+            fig.add_trace(go.Scatter(x=results_df['test_date'], y=results_df['ci_l'], mode='lines', line=dict(
+                width=0), fillcolor='rgba(255,0,0,0.2)', fill='tonexty', name='95% CI'))
+
+        fig.update_layout(title='GDP Predictions',
+                        xaxis_title='Date', yaxis_title='GDP')
+        st.plotly_chart(fig, use_container_width=True)
+
         if not results_df.empty:
-            mape = mean_absolute_percentage_error(
-                results_df['actual_gdp'], results_df['predicted_gdp']) * 100
-            r2 = r2_score(results_df['actual_gdp'],
-                          results_df['predicted_gdp'])
-            st.write(f"**MAPE:** {mape:.2f}%")
-            st.write(f"**R²:** {r2:.2f}")
+            results_df['resid'] = results_df['actual_gdp'] - \
+                results_df['predicted_gdp']
+            results_df['pct_err'] = results_df['resid'] / \
+                results_df['actual_gdp'] * 100
 
-    X = merged_df[feature_columns].values
-    y = merged_df['GDP'].values
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    final_model = model_options[selected_model_name]()
-    final_model.fit(X_scaled, y)
+            r_fig = px.scatter(results_df, x='test_date',
+                            y='resid', trendline='lowess')
+            r_fig.add_hline(y=0, line_dash="dash", line_color="red")
+            st.plotly_chart(r_fig, use_container_width=True)
 
-    # Check for feature importances (RandomForest) or coefficients (LinearRegression)
-    if hasattr(final_model, 'feature_importances_'):
-        importances = final_model.feature_importances_
-    elif hasattr(final_model, 'coef_'):
-        # For linear regression, take absolute values of coefficients to reflect importance
-        importances = np.abs(final_model.coef_)
-    else:
-        st.write("The selected model does not support feature importance extraction.")
-        importances = None
+            mape = np.mean(np.abs(results_df['pct_err']))
+            r2 = 1 - np.sum(results_df['resid']**2) / np.sum(
+                (results_df['actual_gdp'] - results_df['actual_gdp'].mean())**2)
 
-    # Plot the feature importances if available
-    if importances is not None:
-        importance_df = pd.DataFrame({
-            'Feature': feature_columns,
-            'Importance': importances
-        }).sort_values(by='Importance', ascending=False)
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Mean Error", f"{results_df['pct_err'].mean():.1f}%")
+            with col2:
+                st.metric("StdDev", f"{results_df['resid'].std():.1f}")
+            with col3:
+                st.metric("MAPE", f"{mape:.2f}%")
+            with col4:
+                st.metric("R²", f"{r2:.3f}")
+
+        # Feature Importances
         st.subheader("Feature Importances")
-        st.bar_chart(importance_df.set_index('Feature'))
+        if selected_model_name == "Random Forest":
+            feature_importances = model.feature_importances_
+            importance_df = pd.DataFrame({
+            'Feature': feature_columns,
+            'Importance': feature_importances
+            }).sort_values(by='Importance', ascending=False)
+
+            fig = px.bar(importance_df, x='Feature', y='Importance',
+                 title="Feature Importances (Random Forest)", labels={'Importance': 'Importance Score'})
+            st.plotly_chart(fig, use_container_width=True)
+
+        elif selected_model_name == "Linear Regression":
+            coefficients = model.coef_
+            importance_df = pd.DataFrame({
+            'Feature': feature_columns,
+            'Coefficient': coefficients
+            }).sort_values(by='Coefficient', ascending=False)
+
+            fig = px.bar(importance_df, x='Feature', y='Coefficient',
+                 title="Feature Coefficients (Linear Regression)", labels={'Coefficient': 'Coefficient Value'})
+            st.plotly_chart(fig, use_container_width=True)
