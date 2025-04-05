@@ -262,7 +262,7 @@ image_dir = st.sidebar.text_input(
 
 # Data source options
 data_source = st.sidebar.radio(
-    "Data Source", ["Process Images Directly", "Load from Pickle File"], index=0)
+    "Data Source", ["Process Images Directly", "Load from Pickle File"], index=1)
 
 if data_source == "Load from Pickle File":
     pickle_path = st.sidebar.text_input(
