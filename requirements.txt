@@ -8,3 +8,4 @@ scipy==1.15.2
 skimage==0.0
 statsmodels==0.14.0
 streamlit==1.43.2
+scikit-image
