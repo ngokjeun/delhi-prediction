@@ -141,7 +141,7 @@ def extract_features_from_tif(image_path):
     light_mean = np.nanmean(img)
     light_std = np.nanstd(img)
     light_max = np.nanmax(img)
-    threshold = 30
+    threshold = 30 # maybe make configured by user
     urban_area_ratio = (img > threshold).sum() / img.size
     brightness_urban = light_mean * urban_area_ratio
 
@@ -593,8 +593,8 @@ elif page == "Image Viewer":
                             plt.colorbar(im, ax=ax, label="Light Change")
                             st.pyplot(fig)
 
-elif page == "Feature Analysis":
-    st.header("Feature Analysis")
+elif page == "Extracted features":
+    st.header("Extracted features")
 
     log_transform = True
 
@@ -708,43 +708,29 @@ elif page == "Feature Analysis":
                 line=dict(color='red', dash='dash'))
         ]
     )
-    st.plotly_chart(fig_vif, use_container_width=True)
-    st.subheader("Correlation Matrix with Significance Levels")
 
-    corr_cols = [
-        col for col in feature_columns if col not in month_cols] + [economic_variable]
-    corr_matrix = merged_df[corr_cols].corr()
-    p_matrix = pd.DataFrame(np.ones_like(corr_matrix),
-                            columns=corr_matrix.columns, index=corr_matrix.index)
-    for col1 in corr_matrix.columns:
-        for col2 in corr_matrix.columns:
-            if col1 != col2:
-                p_matrix.loc[col1, col2] = stats.pearsonr(
-                    merged_df[col1].dropna(), merged_df[col2].dropna())[1]
-    fig_corr = px.imshow(corr_matrix, text_auto='.2f', aspect='auto',
-                        color_continuous_scale='RdBu_r', color_continuous_midpoint=0)
+    st.subheader("Correlation Matrix")
+    corr_features = ['GDP'] + [col for col in feature_columns if col != 'GDP']
+    corr_matrix = merged_df[corr_features].corr()
 
-    for i, col1 in enumerate(corr_matrix.columns):
-        for j, col2 in enumerate(corr_matrix.columns):
-            p_val = p_matrix.loc[col1, col2]
-            significance = ''
-            if p_val < 0.001:
-                significance = '***'
-            elif p_val < 0.01:
-                significance = '**'
-            elif p_val < 0.05:
-                significance = '*'
+    # Extract only the GDP row
+    gdp_corr_row = corr_matrix.loc['GDP']
 
-            if significance and col1 != col2:
-                fig_corr.add_annotation(
-                    x=j, y=i,
-                    text=significance,
-                    showarrow=False,
-                    font=dict(size=14, color='black'),
-                    xanchor='center', yanchor='bottom'
-                )
+    fig_corr = go.Figure(data=go.Heatmap(
+        z=[gdp_corr_row.values],
+        x=gdp_corr_row.index,
+        y=['GDP'],
+        colorscale='Viridis',
+        colorbar=dict(title="Correlation"),
+        text=[gdp_corr_row.values],
+        texttemplate="%{text:.2f}"  # Show data labels
+    ))
 
-    fig_corr.update_layout(title="Correlation Matrix (Significance Annotated)")
+    fig_corr.update_layout(
+        xaxis_nticks=len(corr_features),
+        title="Correlation of Features with GDP"
+    )
+
     st.plotly_chart(fig_corr, use_container_width=True)
 
 
