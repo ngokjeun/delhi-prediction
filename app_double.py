@@ -42,6 +42,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+
+
 st.set_page_config(
     page_title="Nighttime Lights Analysis", layout="wide")
 
@@ -291,10 +293,7 @@ if econ_df is None or monthly_econ is None:
 merged_df = pd.merge(features_df, monthly_econ, on=[
                      'year', 'month'], how='inner')
 merged_df['month_int'] = merged_df['month']
-models = {
-    "Random Forest": RandomForestRegressor(n_estimators=500, random_state=42),
-    "Linear Regression": LinearRegression()
-}
+
 
 month_dummies = pd.get_dummies(
     merged_df['month'], prefix='month', drop_first=True)
